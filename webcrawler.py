@@ -114,16 +114,25 @@ class WebScraper:
             if has_arabic: scripts.append('Arabic')
             if has_cyrillic: scripts.append('Cyrillic')
             
+            # Determine if Asian or Latin dominant
+            has_asian = has_chinese or has_japanese or has_korean
+            
             return {
                 'primary': primary_lang,
                 'scripts': scripts,
-                'is_mixed': len(scripts) > 1
+                'is_mixed': len(scripts) > 1,
+                'is_asian': has_asian and not has_latin,  # Pure Asian
+                'is_latin': has_latin and not has_asian,   # Pure Latin
+                'content_type': 'characters' if (has_asian and not has_latin) else 'words'
             }
         except LangDetectException:
             return {
                 'primary': 'unknown',
                 'scripts': ['Unknown'],
-                'is_mixed': False
+                'is_mixed': False,
+                'is_asian': False,
+                'is_latin': False,
+                'content_type': 'words'
             }
     
     def extract_words_latin(self, text):
@@ -233,17 +242,17 @@ class WebScraper:
             lang_info = self.detect_language_advanced(text)
             
             # Extract words and phrases based on language
-            all_words = []
+            all_items = []  # Words or Characters based on language
             all_phrases = []
             
             if 'Latin' in lang_info['scripts']:
                 words, phrases = self.extract_words_latin(text)
-                all_words.extend(words)
+                all_items.extend(words)
                 all_phrases.extend(phrases)
             
             if any(script in lang_info['scripts'] for script in ['Chinese', 'Japanese', 'Korean']):
                 chars, sequences = self.extract_words_asian(text)
-                all_words.extend(chars)
+                all_items.extend(chars)
                 all_phrases.extend(sequences)
             
             # Find all links for crawling
@@ -258,8 +267,9 @@ class WebScraper:
                 'language': lang_info['primary'],
                 'scripts': ', '.join(lang_info['scripts']),
                 'is_mixed': lang_info['is_mixed'],
+                'content_type': lang_info['content_type'],  # 'words' or 'characters'
                 'text_length': len(text),
-                'words': all_words,
+                'items': all_items,  # Words or Characters
                 'phrases': all_phrases,
                 'links': links
             }
@@ -464,6 +474,10 @@ st.markdown("---")
 if st.session_state.results:
     results = st.session_state.results
     
+    # Determine if we're showing words or characters
+    content_types = [r['content_type'] for r in results]
+    is_character_content = 'characters' in content_types
+    
     # Statistics
     st.subheader("📊 Statistics")
     
@@ -473,16 +487,18 @@ if st.session_state.results:
         st.metric("Pages Crawled", len(results))
     
     with col2:
-        total_words = sum(len(r['words']) for r in results)
-        st.metric("Total Words", f"{total_words:,}")
+        total_items = sum(len(r['items']) for r in results)
+        label = "Total Characters" if is_character_content else "Total Words"
+        st.metric(label, f"{total_items:,}")
     
     with col3:
         total_phrases = sum(len(r['phrases']) for r in results)
         st.metric("Total Phrases", f"{total_phrases:,}")
     
     with col4:
-        avg_words = total_words / len(results) if results else 0
-        st.metric("Avg Words/Page", f"{avg_words:.1f}")
+        avg_items = total_items / len(results) if results else 0
+        label = "Avg Characters/Page" if is_character_content else "Avg Words/Page"
+        st.metric(label, f"{avg_items:.1f}")
     
     st.markdown("---")
     
@@ -500,12 +516,14 @@ if st.session_state.results:
     # Prepare data for display
     display_data = []
     for r in results:
+        content_label = "Characters" if r['content_type'] == 'characters' else "Words"
         display_data.append({
             'URL': r['url'],
             'Language': r['language'],
             'Scripts': r['scripts'],
             'Mixed': '✓' if r['is_mixed'] else '',
-            'Word Count': len(r['words']),
+            'Content Type': r['content_type'].title(),
+            f'{content_label} Count': len(r['items']),
             'Phrase Count': len(r['phrases']),
             'Text Length': r['text_length'],
             'Depth': r['depth']
@@ -524,7 +542,8 @@ if st.session_state.results:
         # Prepare detailed CSV
         detailed_data = []
         for r in results:
-            top_words = Counter(r['words']).most_common(20)
+            content_label = "Characters" if r['content_type'] == 'characters' else "Words"
+            top_items = Counter(r['items']).most_common(20)
             top_phrases = Counter(r['phrases']).most_common(20)
             
             detailed_data.append({
@@ -532,10 +551,11 @@ if st.session_state.results:
                 'Language': r['language'],
                 'Scripts': r['scripts'],
                 'Is Mixed': r['is_mixed'],
-                'Word Count': len(r['words']),
+                'Content Type': r['content_type'].title(),
+                f'{content_label} Count': len(r['items']),
                 'Phrase Count': len(r['phrases']),
                 'Text Length': r['text_length'],
-                'Top Words': '; '.join([f"{w}({c})" for w, c in top_words]),
+                f'Top {content_label}': '; '.join([f"{w}({c})" for w, c in top_items]),
                 'Top Phrases': '; '.join([f"{p}({c})" for p, c in top_phrases]),
                 'Depth': r['depth']
             })
@@ -551,19 +571,20 @@ if st.session_state.results:
         )
     
     with col2:
-        # Word frequency export
-        all_words = []
+        # Word/Character frequency export
+        all_items = []
         for r in results:
-            all_words.extend(r['words'])
+            all_items.extend(r['items'])
         
-        word_freq = Counter(all_words).most_common(100)
-        freq_df = pd.DataFrame(word_freq, columns=['Word/Character', 'Frequency'])
+        item_freq = Counter(all_items).most_common(100)
+        freq_label = "Character" if is_character_content else "Word"
+        freq_df = pd.DataFrame(item_freq, columns=[freq_label, 'Frequency'])
         freq_csv = freq_df.to_csv(index=False).encode('utf-8')
         
         st.download_button(
-            label="📊 Download Word Frequency",
+            label=f"📊 Download {freq_label} Frequency",
             data=freq_csv,
-            file_name=f"word_frequency_{int(time.time())}.csv",
+            file_name=f"{freq_label.lower()}_frequency_{int(time.time())}.csv",
             mime="text/csv"
         )
 
@@ -585,8 +606,8 @@ else:
     with col2:
         st.markdown("""
         **🌍 Multi-Language Support**
-        - Latin script word extraction
-        - Asian character segmentation
+        - Latin script → Words
+        - Asian script → Characters
         - Mixed content handling
         """)
     
